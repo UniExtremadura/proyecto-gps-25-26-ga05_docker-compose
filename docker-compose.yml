@@ -1,0 +1,189 @@
+services:
+  # PostgreSQL para microservicio de usuarios
+  usuarios-db:
+    image: postgres:18.0-alpine
+    container_name: usuarios_db
+    restart: always
+    environment:
+      POSTGRES_DB: usuarios_postgres
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: 12345
+    ports:
+      - "5434:5432"
+    volumes:
+      - usuarios_data:/var/lib/postgresql/data
+      - ./proyecto-gps-25-26-ga05_usuarios/db:/docker-entrypoint-initdb.d
+    networks:
+      - micro-servicios
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d usuarios_postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Microservicio de usuarios
+  usuarios-app:
+    image: golang:1.25.3-alpine
+    container_name: usuarios_app
+    working_dir: /app
+    ports:
+      - "8082:8080"
+    depends_on:
+      usuarios-db:
+        condition: service_healthy
+    environment:
+      DB_HOST: usuarios-db
+      DB_PORT: 5432
+      DB_NAME: usuarios_postgres
+      DB_USER: user
+      DB_PASSWORD: 12345
+      JWT_SECRET_KEY: 12345
+      GIN_MODE: debug
+      CONTENT_BASE_URL: "http://contenido-app:8080"
+    volumes:
+      - ./proyecto-gps-25-26-ga05_usuarios:/app
+    command: sh -c "sleep 10 && go run main.go"
+    networks:
+      - micro-servicios
+    restart: on-failure
+
+  # PostgreSQL para microservicio de contenido
+  contenido-db:
+    image: postgres:18.0-alpine
+    container_name: contenido_db
+    restart: always
+    environment:
+      POSTGRES_DB: contenido_postgres
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: 12345
+    ports:
+      - "5433:5432"
+    volumes:
+      - contenido_data:/var/lib/postgresql/data
+      - ./proyecto-gps-25-26-ga05_contenido/db:/docker-entrypoint-initdb.d
+      - ./proyecto-gps-25-26-ga05_contenido/assets:/tmp/assets
+    networks:
+      - micro-servicios
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d contenido_postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Microservicio de contenido
+  contenido-app:
+    image: golang:1.25.3-alpine
+    container_name: contenido_app
+    working_dir: /app
+    ports:
+      - "8081:8080"
+    depends_on:
+      contenido-db:
+        condition: service_healthy
+    environment:
+      DB_HOST: contenido-db
+      DB_PORT: 5432
+      DB_NAME: contenido_postgres
+      DB_USER: user
+      DB_PASSWORD: 12345
+      JWT_SECRET_KEY: 12345
+      GIN_MODE: debug
+    volumes:
+      - ./proyecto-gps-25-26-ga05_contenido:/app
+    command: sh -c "sleep 10 && go run main.go"
+    networks:
+      - micro-servicios
+    restart: on-failure
+
+  # Cassandra para microservicio de estadísticas
+  estadisticas-db:
+    image: cassandra:3.11.14
+    container_name: estadisticas_db
+    restart: always
+    environment:
+      CASSANDRA_CLUSTER_NAME: "EstadisticasCluster"
+      CASSANDRA_USER: user
+      CASSANDRA_PASSWORD: 12345
+      CASSANDRA_AUTHENTICATOR: PasswordAuthenticator
+    ports:
+      - "9042:9042"
+    volumes:
+      - estadisticas_data:/var/lib/cassandra
+    networks:
+      - micro-servicios
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -u user -p 12345 -e 'describe keyspaces'"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+
+  # Microservicio de estadísticas
+  estadisticas-app:
+    image: golang:1.25.3-alpine
+    container_name: estadisticas_app
+    working_dir: /app
+    ports:
+      - "8083:8080"
+    depends_on:
+      estadisticas-db:
+        condition: service_healthy
+    environment:
+      CASSANDRA_HOST: estadisticas-db
+      CASSANDRA_PORT: 9042
+      CASSANDRA_USER: user
+      CASSANDRA_PASSWORD: 12345
+      GIN_MODE: debug
+      USERS_BASE_URL: "http://usuarios-app:8080"
+      CONTENT_BASE_URL: "http://contenido-app:8080"
+    volumes:
+      - ./proyecto-gps-25-26-ga05_estadisticas:/app
+    command: sh -c "sleep 30 && go run main.go"
+    networks:
+      - micro-servicios
+    restart: on-failure
+
+  # Frontend con Vite - modo desarrollo
+  frontend:
+    image: node:22-alpine
+    container_name: frontend_app
+    working_dir: /app
+    ports:
+      - "5173:5173"  # Puerto de desarrollo de Vite
+      - "3000:3000"  # Puerto alternativo
+    depends_on:
+      - usuarios-app
+      - contenido-app
+      - estadisticas-app
+    environment:
+      VITE_API_USUARIOS_URL: "http://localhost:8082"
+      VITE_API_CONTENIDO_URL: "http://localhost:8081"
+      VITE_API_ESTADISTICAS_URL: "http://localhost:8083"
+      VITE_HOST: "0.0.0.0"
+      VITE_PORT: "5173"
+    volumes:
+      - ./proyecto-gps-25-26-ga05_frontend:/app
+      - /app/node_modules  # Montaje anónimo para node_modules
+    command: >
+      sh -c "
+        echo '=== INICIANDO FRONTEND ===' &&
+        echo 'Node version:' && node --version &&
+        echo 'NPM version:' && npm --version &&
+        echo 'Instalando dependencias si es necesario...' &&
+        if [ ! -d 'node_modules' ] || [ ! -f 'node_modules/.bin/vite' ]; then
+          npm install
+        fi &&
+        echo 'Iniciando servidor de desarrollo Vite...' &&
+        npm run dev -- --host 0.0.0.0 --port 5173
+      "
+    networks:
+      - micro-servicios
+    restart: unless-stopped
+
+volumes:
+  usuarios_data:
+  contenido_data:
+  estadisticas_data:
+
+networks:
+  micro-servicios:
+    driver: bridge
